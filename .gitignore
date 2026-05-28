@@ -8,3 +8,6 @@ wal.log
 catalog.cat
 catalog.cat.tmp
 .DS_Store
+.idea/
+.vscode/
+*.iml
