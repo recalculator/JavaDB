@@ -1,7 +1,14 @@
 package com.javadb.storage;
 
 import java.util.Arrays;
+import java.util.Objects;
 
+/**
+ * A database row.
+ *
+ * NOTE: Java records generate equals/hashCode that use Object identity (==) for
+ * array fields, not Arrays.equals. We override both to get value semantics.
+ */
 public record Row(Object[] values, boolean deleted) {
 
     /** Convenience constructor for a live (non-deleted) row. */
@@ -31,6 +38,18 @@ public record Row(Object[] values, boolean deleted) {
 
     public static Row of(Object... values) {
         return new Row(values, false);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Row other)) return false;
+        return this.deleted == other.deleted && Arrays.equals(this.values, other.values);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(Arrays.hashCode(values), deleted);
     }
 
     @Override

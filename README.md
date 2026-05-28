@@ -128,7 +128,7 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 -- Output:
 --   FULL_SCAN
 --     table     : users
---     predicate : BinaryOp[Column[age], >, Literal[18]]
+--     predicate : BinaryOp[left=Column[name=age], operator=>, right=Literal[value=18]]
 
 EXPLAIN SELECT * FROM users WHERE id BETWEEN 100 AND 200;
 -- Output:
@@ -263,23 +263,30 @@ java -cp target/javadb-1.0.0-jar-with-dependencies.jar \
 ### REPL example
 
 ```
-JavaDB ready. Type SQL or 'exit' to quit.
-> CREATE TABLE users (id INT, name STRING, age INT);
+JavaDB 1.0.0
+Data directory: /path/to/data
+Type SQL ending with ';', or 'exit' to quit.
+
+javadb> CREATE TABLE users (id INT, name STRING, age INT);
 Table users created.
-> INSERT INTO users VALUES (1, 'Ayaan', 20);
+
+javadb> INSERT INTO users VALUES (1, 'Ayaan', 20);
 1 row(s) affected
-> SELECT * FROM users WHERE id = 1;
+
+javadb> SELECT * FROM users WHERE id = 1;
 id | name | age
 --------------------
 1 | Ayaan | 20
 (1 row(s))
-> EXPLAIN SELECT * FROM users WHERE id > 5;
+
+javadb> EXPLAIN SELECT * FROM users WHERE id > 5;
 INDEX_RANGE_SCAN
   table     : users
   index col : id
   range     : [6, +∞]
-> exit
-JavaDB stopped.
+
+javadb> exit
+Bye.
 ```
 
 ---
@@ -330,6 +337,7 @@ JavaDB stopped.
 - **No secondary indexes** — only the first INT column is auto-indexed
 - **No query optimiser cost model** — plan selection is rule-based
 - **INT and STRING types only** — no floats, booleans, or dates
+- **No primary-key enforcement** — duplicate keys are stored; the index returns the last-inserted duplicate
 
 These are deliberate omissions, not oversights. The goal is a codebase that can be fully understood, explained in an interview, and extended one component at a time.
 

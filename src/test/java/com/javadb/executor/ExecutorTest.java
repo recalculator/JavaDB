@@ -85,9 +85,45 @@ class ExecutorTest {
             db.execute("CREATE TABLE t (id INT, val STRING)");
             db.execute("INSERT INTO t VALUES (99, 'hello')");
         }
-        // Reopen — catalog is in-memory only, so we can't fully reopen without persistence
-        // but this tests that storage files exist and can be re-read
-        // (Catalog persistence would be a Phase 2 feature)
+        // Reopen: catalog and table file must both survive.
+        try (Database db = new Database(tmpDir)) {
+            QueryResult r = db.execute("SELECT * FROM t WHERE id = 99");
+            assertEquals(1, r.rows().size());
+            assertEquals(99,      r.rows().get(0).get(0));
+            assertEquals("hello", r.rows().get(0).get(1));
+        }
+    }
+
+    @Test
+    void insertTooManyValuesThrows(@TempDir File tmpDir) throws Exception {
+        try (Database db = new Database(tmpDir)) {
+            db.execute("CREATE TABLE t (id INT, name STRING)");
+            assertThrows(IllegalArgumentException.class,
+                () -> db.execute("INSERT INTO t VALUES (1, 'a', 'extra')"));
+            // Table must be empty — bad insert must not persist anything.
+            QueryResult r = db.execute("SELECT * FROM t");
+            assertEquals(0, r.rows().size());
+        }
+    }
+
+    @Test
+    void insertTooFewValuesThrows(@TempDir File tmpDir) throws Exception {
+        try (Database db = new Database(tmpDir)) {
+            db.execute("CREATE TABLE t (id INT, name STRING)");
+            assertThrows(IllegalArgumentException.class,
+                () -> db.execute("INSERT INTO t VALUES (1)"));
+        }
+    }
+
+    @Test
+    void insertWrongTypeThrows(@TempDir File tmpDir) throws Exception {
+        try (Database db = new Database(tmpDir)) {
+            db.execute("CREATE TABLE t (id INT, name STRING)");
+            // Parser produces 'notanint' as a STRING_LITERAL, so it ends up as String
+            // where INT is expected.
+            assertThrows(Exception.class,
+                () -> db.execute("INSERT INTO t VALUES ('notanint', 'name')"));
+        }
     }
 
     @Test

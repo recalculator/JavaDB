@@ -88,6 +88,7 @@ public class Executor {
 
     private QueryResult executeInsert(InsertStatement stmt) throws Exception {
         TableSchema schema = catalog.getTable(stmt.tableName());
+        validateInsertValues(stmt, schema);
         return lockManager.withWriteLock(stmt.tableName(), () -> {
             TableFile tf = storage.openTable(schema);
             Row row = new Row(stmt.values().toArray());
@@ -315,6 +316,35 @@ public class Executor {
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    /**
+     * Validates that an INSERT supplies exactly the right number of values and
+     * that each value's runtime type matches the declared column type.
+     * Throws IllegalArgumentException with a clear message on any mismatch.
+     */
+    private void validateInsertValues(InsertStatement stmt, TableSchema schema) {
+        int expected = schema.columns().size();
+        int actual   = stmt.values().size();
+        if (actual != expected) {
+            throw new IllegalArgumentException(
+                "INSERT into " + stmt.tableName() + " expects " + expected
+                + " value(s) but got " + actual);
+        }
+        for (int i = 0; i < expected; i++) {
+            Column col = schema.columns().get(i);
+            Object val = stmt.values().get(i);
+            boolean typeOk = switch (col.type()) {
+                case INT    -> val instanceof Integer;
+                case STRING -> val instanceof String;
+            };
+            if (!typeOk) {
+                throw new IllegalArgumentException(
+                    "Column '" + col.name() + "' expects " + col.type()
+                    + " but got " + (val == null ? "null" : val.getClass().getSimpleName())
+                    + " (" + val + ")");
+            }
+        }
+    }
 
     private Row applyAssignments(Row row, Map<String, Object> assignments, TableSchema schema) {
         Row updated = row;

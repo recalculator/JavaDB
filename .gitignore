@@ -1,0 +1,10 @@
+target/
+*.class
+*.jar
+benchmark-results.csv
+data/
+*.tbl
+wal.log
+catalog.cat
+catalog.cat.tmp
+.DS_Store

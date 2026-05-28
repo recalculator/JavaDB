@@ -26,6 +26,7 @@ com/javadb/catalog/DataType.class
 com/javadb/planner/ExecutionPlan$IndexRangeScan.class
 com/javadb/parser/Parser.class
 com/javadb/index/IndexManager.class
+com/javadb/executor/Executor$1.class
 com/javadb/planner/ExecutionPlan$IndexScan.class
 com/javadb/planner/QueryPlanner$RangeHint.class
 com/javadb/index/BPlusTree.class

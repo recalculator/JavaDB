@@ -62,4 +62,34 @@ class ParserTest {
     void throwsOnInvalidSyntax() {
         assertThrows(ParseException.class, () -> Parser.parse("SELECT FROM"));
     }
+
+    @Test
+    void parsesBetweenDesugarsToAndExpression() {
+        // BETWEEN x AND y must desugar to (col >= x) AND (col <= y)
+        SelectStatement stmt = (SelectStatement) Parser.parse(
+            "SELECT * FROM t WHERE id BETWEEN 10 AND 20");
+        assertNotNull(stmt.where());
+        Expression.BinaryOp and = (Expression.BinaryOp) stmt.where();
+        assertEquals("AND", and.operator());
+        Expression.BinaryOp lo = (Expression.BinaryOp) and.left();
+        Expression.BinaryOp hi = (Expression.BinaryOp) and.right();
+        assertEquals(">=", lo.operator());
+        assertEquals("<=", hi.operator());
+        assertEquals(10, ((Expression.Literal) lo.right()).value());
+        assertEquals(20, ((Expression.Literal) hi.right()).value());
+    }
+
+    @Test
+    void parsesExplainSelect() {
+        ExplainStatement stmt = (ExplainStatement) Parser.parse(
+            "EXPLAIN SELECT * FROM users WHERE id = 5");
+        assertNotNull(stmt.inner());
+        assertEquals("users", stmt.inner().tableName());
+    }
+
+    @Test
+    void explainRequiresSelect() {
+        assertThrows(ParseException.class, () ->
+            Parser.parse("EXPLAIN INSERT INTO t VALUES (1)"));
+    }
 }

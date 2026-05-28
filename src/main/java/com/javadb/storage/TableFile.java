@@ -127,21 +127,6 @@ public class TableFile implements Closeable {
         return result;
     }
 
-    /**
-     * Returns RowIds for ALL slots (live + tombstoned).
-     * Used by index rebuild, which inspects every row including deletions.
-     */
-    public List<RowId> scanAllSlotIds() {
-        List<RowId> result = new ArrayList<>();
-        for (int p = 0; p < pageCache.size(); p++) {
-            int count = pageCache.get(p).slotCount();
-            for (int s = 0; s < count; s++) {
-                result.add(new RowId(p, s));
-            }
-        }
-        return result;
-    }
-
     // ── Persistence ────────────────────────────────────────────────────────────
 
     private void flushPage(int pageIndex) throws IOException {

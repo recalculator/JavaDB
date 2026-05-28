@@ -56,7 +56,7 @@ public class RecoveryManager {
         }
         // Anything still in `pending` has no COMMIT — discard it (crash before commit).
         if (!pending.isEmpty()) {
-            System.out.println("[Recovery] Discarding " + pending.size()
+            System.err.println("[Recovery] Discarding " + pending.size()
                 + " uncommitted WAL entry(ies) from incomplete transaction.");
         }
         return committed;
@@ -72,15 +72,15 @@ public class RecoveryManager {
     public void recover(Executor executor) throws IOException {
         List<String> committed = committedOperations();
         if (committed.isEmpty()) {
-            System.out.println("[Recovery] WAL clean — no operations to replay.");
+            System.err.println("[Recovery] WAL clean — no operations to replay.");
         } else {
-            System.out.println("[Recovery] " + committed.size()
+            System.err.println("[Recovery] " + committed.size()
                 + " committed operation(s) confirmed durable (already on disk).");
         }
         // Checkpoint: truncate the WAL now that we have confirmed all committed
         // data is in the storage files. Future crashes will not need to replay
         // operations from before this point.
         wal.checkpoint();
-        System.out.println("[Recovery] WAL checkpointed.");
+        System.err.println("[Recovery] WAL checkpointed.");
     }
 }

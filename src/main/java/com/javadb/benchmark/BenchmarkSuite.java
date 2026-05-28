@@ -47,13 +47,23 @@ public class BenchmarkSuite {
         List<BenchmarkResult> results = new ArrayList<>();
 
         // ── 1. Insert throughput ───────────────────────────────────────────────
+        // Note: each insert does one WAL flush + one page write. Throughput is
+        // bottlenecked by synchronous I/O, not JIT. The warmup phase inserts
+        // WARMUP_INSERT rows (unmeasured) so the JIT sees realistic bytecode
+        // before the timed section begins.
         header("1. Insert Throughput");
         for (int n : INSERT_SIZES) {
+            int warmupCount = Math.min(500, n / 10);
             File dir = tmp("bench-insert-" + n);
             try (Database db = new Database(dir)) {
-                // Warmup: not measured
-                warmupInsert(db, Math.min(n / 10, 1000));
+                db.execute("CREATE TABLE bench (id INT, name STRING, age INT)");
 
+                // Unmeasured warmup inserts (negative IDs so they don't collide).
+                for (int i = 1; i <= warmupCount; i++) {
+                    db.execute("INSERT INTO bench VALUES (-" + i + ", 'warm', 0)");
+                }
+
+                // Timed section: positive IDs 1..n
                 long start = nanos();
                 for (int i = 1; i <= n; i++) {
                     db.execute("INSERT INTO bench VALUES (" + i + ", 'user" + i + "', " + (i % 100) + ")");
@@ -63,7 +73,8 @@ public class BenchmarkSuite {
                 double rps = n * 1e9 / elapsed;
                 results.add(new BenchmarkResult(
                     "Insert " + fmt(n) + " rows", "-", fmt(n), ms(elapsed), rps, "-"));
-                row(fmt(n) + " rows", ms(elapsed) + " ms", String.format("%.0f rows/s", rps), "-");
+                row(fmt(n) + " rows", ms(elapsed) + " ms", String.format("%.0f rows/s", rps),
+                    "(+" + warmupCount + " warmup, unmeasured)");
             }
             deleteDir(dir);
         }
@@ -184,12 +195,6 @@ public class BenchmarkSuite {
         for (int i = 1; i <= n; i++) {
             db.execute("INSERT INTO bench VALUES (" + i + ", 'user" + i + "', " + (i % 100) + ")");
         }
-    }
-
-    private static void warmupInsert(Database db, int n) throws Exception {
-        db.execute("CREATE TABLE bench (id INT, name STRING, age INT)");
-        // Insert a small batch to warm up JIT, then delete all to get a clean slate.
-        // Since we have no TRUNCATE, we recreate in the caller's own session.
     }
 
     private static long runConcurrent(Database db, int threads, int queriesPerThread)

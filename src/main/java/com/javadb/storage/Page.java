@@ -27,16 +27,13 @@ public class Page {
 
     // All slots, including tombstones. The slot index == RowId.slotIndex — never changes.
     private final List<Row> slots;
-    private boolean dirty;
 
     public Page() {
         this.slots = new ArrayList<>();
-        this.dirty = true;
     }
 
     private Page(List<Row> slots) {
         this.slots = slots;
-        this.dirty = false;
     }
 
     /**
@@ -65,12 +62,10 @@ public class Page {
 
     public void addRow(Row row) {
         slots.add(row);
-        dirty = true;
     }
 
     public void replaceSlot(int slotIndex, Row row) {
         slots.set(slotIndex, row);
-        dirty = true;
     }
 
     /**
@@ -79,21 +74,10 @@ public class Page {
      */
     public void tombstone(int slotIndex) {
         slots.set(slotIndex, slots.get(slotIndex).asDeleted());
-        dirty = true;
     }
 
     public int slotCount() {
         return slots.size();
-    }
-
-    public int liveRowCount() {
-        int count = 0;
-        for (Row row : slots) if (!row.deleted()) count++;
-        return count;
-    }
-
-    public boolean isDirty() {
-        return dirty;
     }
 
     // ── Serialization ──────────────────────────────────────────────────────────
@@ -122,7 +106,6 @@ public class Page {
         }
         byte[] padded = new byte[PAGE_SIZE];
         System.arraycopy(data, 0, padded, 0, data.length);
-        dirty = false;
         return padded;
     }
 
