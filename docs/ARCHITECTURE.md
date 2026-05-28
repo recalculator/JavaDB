@@ -57,21 +57,22 @@ JavaDB is a single-process, single-node relational database engine. There is no 
 
 ### Step 3: Query planning
 
-`QueryPlanner.java` inspects the parsed `Statement` and returns an `ExecutionPlan`. The planner reads from the `Catalog` to know which columns are indexed. Plan selection is purely rule-based:
+`QueryPlanner.java` inspects the parsed `Statement` and returns an `ExecutionPlan`. The planner reads from the `Catalog` to know which columns have explicit indexes. Plan selection is purely rule-based:
 
 | Condition | Plan |
 |---|---|
 | WHERE `indexed_col = value` | `INDEX_SCAN` |
 | WHERE `indexed_col op value` (range) | `INDEX_RANGE_SCAN` |
-| Any other / no WHERE | `FULL_SCAN` |
+| Any other / no WHERE, or no index | `FULL_SCAN` |
 
-Only the first INT column of each table is automatically indexed. EXPLAIN returns the plan without executing it.
+Indexes are **explicit only** — created with `CREATE INDEX idx_name ON table(col)`. There is no auto-indexing. The planner reads `IndexMetadata` from the `Catalog`, which includes the index name carried through to `EXPLAIN` output. EXPLAIN returns the plan without executing it.
 
 ### Step 4: Execution
 
 `Executor.java` takes an `ExecutionPlan` and drives the storage/index layers to produce a `QueryResult`.
 
 - **DDL** (`CREATE TABLE`): registers schema in `Catalog`, writes to `catalog.cat`, opens a new `TableFile`.
+- **DDL** (`CREATE INDEX`): validates table/column/type/uniqueness via `Catalog.registerIndex`, creates the in-memory `BPlusTree` via `IndexManager`, then backfills by scanning all live rows in the `TableFile`.
 - **INSERT**: acquires write lock → writes WAL INSERT entry → appends row to `TableFile` → inserts key into `BPlusTree` → writes WAL COMMIT.
 - **SELECT (full scan)**: acquires read lock → iterates all pages → skips tombstoned slots → applies `WHERE` predicate → projects columns.
 - **SELECT (index scan)**: acquires read lock → B+ tree point lookup → fetches the specific row by `RowId` → applies any remaining predicates.
@@ -115,8 +116,10 @@ TABLE users
 COLUMN id INT
 COLUMN name STRING
 COLUMN age INT
-INDEX users id
+INDEX idx_users_id users id
 ```
+
+The `INDEX` line format is `INDEX <indexName> <tableName> <columnName>`. The index name is used in `EXPLAIN` output and survives restarts.
 
 It is always rewritten atomically: written to `catalog.cat.tmp`, then `Files.move(..., ATOMIC_MOVE)`. On startup, the file is parsed to reconstruct `Catalog` state before any user query runs.
 
@@ -133,10 +136,11 @@ It is always rewritten atomically: written to `catalog.cat.tmp`, then `Files.mov
 
 ## Index lifecycle
 
-1. **Startup**: `RecoveryManager` loads the catalog, then for each indexed column, scans the corresponding `.tbl` file and inserts every non-tombstoned row into a new `BPlusTree`. This takes O(N) time proportional to data size.
-2. **INSERT**: after the row is appended to the table file, `IndexManager.insert(table, col, key, rowId)` inserts into the in-memory tree.
-3. **DELETE**: `IndexManager.delete(table, col, key)` removes the key from the tree. The slot is tombstoned in the page but not removed.
-4. **Restart**: the index is rebuilt fresh from the table file; the in-memory tree is discarded.
+1. **CREATE INDEX**: validates table/column/type/uniqueness, registers `IndexMetadata` (including index name) in the catalog, creates a `BPlusTree` in `IndexManager`, then backfills by scanning all live rows.
+2. **Startup**: `Executor.rebuildIndexes()` reads all `IndexMetadata` from the catalog, creates `BPlusTree` instances, and scans each `.tbl` file to populate them. This takes O(N) time proportional to data size.
+3. **INSERT**: after the row is appended to the table file, each indexed column's `BPlusTree` is updated.
+4. **DELETE**: `IndexManager.delete(table, col, key)` removes the key from the tree. The slot is tombstoned in the page but not removed.
+5. **Restart**: the index is rebuilt fresh from the table file; the in-memory tree is discarded.
 
 The B+ tree (order 128) stores `Integer → RowId` mappings. Leaf nodes are doubly-linked for O(k) range traversal after an O(log N) initial descent.
 

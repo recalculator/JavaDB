@@ -11,8 +11,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Verifies that EXPLAIN returns the correct plan type and that the planner
- * chooses INDEX_SCAN / INDEX_RANGE_SCAN when an index is available and
- * FULL_SCAN otherwise.
+ * chooses INDEX_SCAN / INDEX_RANGE_SCAN when an explicit CREATE INDEX exists
+ * and FULL_SCAN otherwise.
  */
 class ExplainTest {
 
@@ -22,6 +22,7 @@ class ExplainTest {
     void explainEqualityUsesIndexScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, name STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE id = 42");
             assertNotNull(r.message());
             assertTrue(r.message().contains("INDEX_SCAN"),
@@ -32,12 +33,49 @@ class ExplainTest {
     }
 
     @Test
+    void explainShowsIndexName(@TempDir File dir) throws Exception {
+        try (Database db = new Database(dir)) {
+            db.execute("CREATE TABLE t (id INT, name STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
+            QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE id = 5");
+            assertTrue(r.message().contains("idx_t_id"),
+                "EXPLAIN should show index name, got: " + r.message());
+        }
+    }
+
+    @Test
+    void explainBeforeCreateIndexUsesFullScan(@TempDir File dir) throws Exception {
+        try (Database db = new Database(dir)) {
+            db.execute("CREATE TABLE t (id INT, name STRING)");
+            // No CREATE INDEX yet — must fall back to full scan even on indexed-type col
+            QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE id = 42");
+            assertTrue(r.message().contains("FULL_SCAN"),
+                "Before CREATE INDEX, planner should use FULL_SCAN, got: " + r.message());
+        }
+    }
+
+    @Test
+    void explainAfterCreateIndexUsesIndexScan(@TempDir File dir) throws Exception {
+        try (Database db = new Database(dir)) {
+            db.execute("CREATE TABLE t (id INT, name STRING)");
+            // Before index
+            QueryResult before = db.execute("EXPLAIN SELECT * FROM t WHERE id = 1");
+            assertTrue(before.message().contains("FULL_SCAN"),
+                "Before index: " + before.message());
+            // Create index
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
+            // After index
+            QueryResult after = db.execute("EXPLAIN SELECT * FROM t WHERE id = 1");
+            assertTrue(after.message().contains("INDEX_SCAN"),
+                "After index: " + after.message());
+        }
+    }
+
+    @Test
     void explainNoIndexUsesFullScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
-            // name is a STRING column — no index is created on it.
             db.execute("CREATE TABLE t (id INT, name STRING)");
             QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE name = 'alice'");
-            assertNotNull(r.message());
             assertTrue(r.message().contains("FULL_SCAN"),
                 "Expected FULL_SCAN, got: " + r.message());
         }
@@ -56,8 +94,8 @@ class ExplainTest {
     void explainGtUsesIndexRangeScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, val STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE id > 10");
-            assertNotNull(r.message());
             assertTrue(r.message().contains("INDEX_RANGE_SCAN"),
                 "Expected INDEX_RANGE_SCAN, got: " + r.message());
         }
@@ -67,6 +105,7 @@ class ExplainTest {
     void explainLtUsesIndexRangeScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, val STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE id < 100");
             assertTrue(r.message().contains("INDEX_RANGE_SCAN"));
         }
@@ -76,6 +115,7 @@ class ExplainTest {
     void explainBetweenUsesIndexRangeScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, val STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE id BETWEEN 10 AND 20");
             assertTrue(r.message().contains("INDEX_RANGE_SCAN"),
                 "Expected INDEX_RANGE_SCAN, got: " + r.message());
@@ -85,8 +125,9 @@ class ExplainTest {
     @Test
     void explainRangeOnNonIndexedColumnUsesFullScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
-            // Only the first INT column (id) is auto-indexed; age is not indexed.
+            // age has no index; only id has one
             db.execute("CREATE TABLE t (id INT, age INT, name STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE age > 18");
             assertTrue(r.message().contains("FULL_SCAN"),
                 "Non-indexed column should fall back to FULL_SCAN, got: " + r.message());
@@ -97,24 +138,35 @@ class ExplainTest {
     void explainOutputContainsTableName(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE employees (id INT, dept STRING)");
+            db.execute("CREATE INDEX idx_emp_id ON employees(id)");
             QueryResult r = db.execute("EXPLAIN SELECT * FROM employees WHERE id = 1");
             assertTrue(r.message().contains("employees"),
                 "EXPLAIN output should contain table name");
         }
     }
 
-    // ── Range scan correctness vs full scan ────────────────────────────────────
+    @Test
+    void explainRangeShowsIndexName(@TempDir File dir) throws Exception {
+        try (Database db = new Database(dir)) {
+            db.execute("CREATE TABLE t (id INT)");
+            db.execute("CREATE INDEX my_index ON t(id)");
+            QueryResult r = db.execute("EXPLAIN SELECT * FROM t WHERE id BETWEEN 1 AND 100");
+            assertTrue(r.message().contains("my_index"),
+                "Range scan EXPLAIN should show index name, got: " + r.message());
+        }
+    }
+
+    // ── Range scan correctness ─────────────────────────────────────────────────
 
     @Test
     void rangeGtMatchesFullScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, val STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             for (int i = 1; i <= 20; i++) {
                 db.execute("INSERT INTO t VALUES (" + i + ", 'v" + i + "')");
             }
-            // Index range scan via WHERE id > 15
             QueryResult byIndex = db.execute("SELECT * FROM t WHERE id > 15");
-            // Verify result is correct — should be ids 16..20 = 5 rows
             assertEquals(5, byIndex.rows().size(),
                 "id > 15 should return 5 rows (16-20)");
             for (var row : byIndex.rows()) {
@@ -128,6 +180,7 @@ class ExplainTest {
     void rangeLteMatchesFullScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, val STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             for (int i = 1; i <= 10; i++) {
                 db.execute("INSERT INTO t VALUES (" + i + ", 'v" + i + "')");
             }
@@ -143,6 +196,7 @@ class ExplainTest {
     void rangeBetweenMatchesFullScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, val STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             for (int i = 1; i <= 30; i++) {
                 db.execute("INSERT INTO t VALUES (" + i + ", 'v" + i + "')");
             }
@@ -159,11 +213,12 @@ class ExplainTest {
     void rangeGteMatchesFullScan(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, val STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             for (int i = 1; i <= 10; i++) {
                 db.execute("INSERT INTO t VALUES (" + i + ", 'v" + i + "')");
             }
-            QueryResult idx  = db.execute("SELECT * FROM t WHERE id >= 7");
-            assertEquals(4, idx.rows().size(), "id >= 7 should return 4 rows (7,8,9,10)");
+            QueryResult r = db.execute("SELECT * FROM t WHERE id >= 7");
+            assertEquals(4, r.rows().size(), "id >= 7 should return 4 rows (7,8,9,10)");
         }
     }
 
@@ -171,6 +226,7 @@ class ExplainTest {
     void rangeEmptyResultWhenNoneMatch(@TempDir File dir) throws Exception {
         try (Database db = new Database(dir)) {
             db.execute("CREATE TABLE t (id INT, val STRING)");
+            db.execute("CREATE INDEX idx_t_id ON t(id)");
             for (int i = 1; i <= 5; i++) {
                 db.execute("INSERT INTO t VALUES (" + i + ", 'v')");
             }

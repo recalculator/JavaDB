@@ -18,6 +18,8 @@ public class Lexer {
         Map.entry("delete", TokenType.DELETE),
         Map.entry("create", TokenType.CREATE),
         Map.entry("table", TokenType.TABLE),
+        Map.entry("index", TokenType.INDEX),
+        Map.entry("on", TokenType.ON),
         Map.entry("int", TokenType.INT),
         Map.entry("string", TokenType.STRING_TYPE),
         Map.entry("and", TokenType.AND),

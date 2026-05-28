@@ -1,7 +1,7 @@
 package com.javadb.catalog;
 
 /**
- * Records which column has a B+ tree index on a table.
- * Stored in the catalog file so indexes can be rebuilt on restart.
+ * Records a named B+ tree index on a table column.
+ * Persisted in catalog.cat so indexes survive restarts.
  */
-public record IndexMetadata(String tableName, String columnName) {}
+public record IndexMetadata(String indexName, String tableName, String columnName) {}

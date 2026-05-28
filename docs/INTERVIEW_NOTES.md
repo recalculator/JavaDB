@@ -2,7 +2,7 @@
 
 ## Resume bullet
 
-> Built a relational database engine from scratch in Java 21 featuring SQL parsing (recursive-descent), B+ tree indexing with range scan, 4 KB page-based persistent storage, write-ahead logging with correct commit ordering, crash recovery, tombstone-based deletes with stable RowIds, atomic catalog persistence, reader-writer concurrency, EXPLAIN, and a benchmark suite. 76 passing tests covering restart correctness, delete safety, index rebuild, and concurrent access.
+> Built a relational database engine from scratch in Java 21 featuring SQL query parsing (recursive-descent), explicit `CREATE INDEX` with B+ tree indexing and range scan support, 4 KB page-based persistent storage, write-ahead logging with correct commit ordering, crash recovery with WAL checkpointing, tombstone-based deletes with stable RowIds, persistent catalog with atomic writes, concurrent reader-writer locking, an EXPLAIN command showing named indexes, and a configurable benchmark suite. 96 passing tests covering CREATE INDEX validation, backfill, restart persistence, planner integration, delete safety, and concurrent access.
 
 ---
 
@@ -10,7 +10,7 @@
 
 1. **Storage layer**: rows live in fixed-size 4 KB pages in a flat binary file per table. Deletes write a tombstone flag rather than shifting rows, which keeps B+ tree `RowId` references permanently valid.
 
-2. **B+ tree index**: hand-implemented in-memory B+ tree (order 128) on the first INT column of every table. Leaf nodes are doubly-linked for O(k) range traversal. Rebuilt from the table file on every startup — simple, correct, and fast for the target dataset size.
+2. **Explicit B+ tree indexes via CREATE INDEX**: hand-implemented in-memory B+ tree (order 128) on any INT column, created explicitly with `CREATE INDEX idx_name ON table(col)`. Leaf nodes are doubly-linked for O(k) range traversal. On `CREATE INDEX`, existing rows are backfilled immediately. Rebuilt from the table file on every startup — simple, correct, and fast for the target dataset size.
 
 3. **WAL and recovery**: every mutation follows intent → storage write → COMMIT. A crash before COMMIT leaves an uncommitted intent; recovery discards it and truncates the log. No redo logic is needed because storage writes precede COMMIT.
 

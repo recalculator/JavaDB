@@ -22,9 +22,9 @@ The tradeoff is that deletes do not reclaim space. For an educational engine thi
 
 ---
 
-## B+ tree rebuilt on every startup
+## B+ tree indexes are explicit and rebuilt on every startup
 
-**Decision:** the in-memory B+ tree is discarded on shutdown and rebuilt by scanning the table file on startup.
+**Decision:** indexes are created explicitly via `CREATE INDEX`. The in-memory B+ tree is discarded on shutdown and rebuilt by scanning the table file on startup.
 
 **Alternative:** persist the B+ tree to disk (a disk-backed B+ tree like those used in SQLite or InnoDB).
 

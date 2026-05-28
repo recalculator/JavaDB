@@ -4,27 +4,22 @@ import java.io.*;
 import java.util.*;
 
 /**
- * Stores table schemas and index metadata, persisted to a flat text file.
+ * Stores table schemas and named index metadata, persisted to a flat text file.
  *
  * File format (catalog.cat):
  *   TABLE <tableName>
  *   COLUMN <colName> <INT|STRING>
- *   COLUMN <colName> <INT|STRING>
- *   INDEX <tableName> <colName>
- *   TABLE <tableName2>
- *   ...
+ *   INDEX <indexName> <tableName> <colName>
  *
- * One TABLE block per table; INDEX lines follow after all COLUMN lines for that table.
- * The file is rewritten in full on every schema change — schemas change rarely, so
- * the simplicity is worth it over a more complex append-only format.
+ * The file is rewritten in full on every schema change.
  */
 public class Catalog {
 
     private static final String CATALOG_FILE = "catalog.cat";
 
     private final Map<String, TableSchema> tables = new LinkedHashMap<>();
-    // index metadata: tableName.toLowerCase() -> list of indexed column names
-    private final Map<String, List<String>> indexedColumns = new LinkedHashMap<>();
+    // key: "tableName.columnName" (both lower-cased) → IndexMetadata
+    private final Map<String, IndexMetadata> indexes = new LinkedHashMap<>();
 
     private final File catalogFile;
 
@@ -43,19 +38,35 @@ public class Catalog {
             throw new IllegalStateException("Table already exists: " + schema.tableName());
         }
         tables.put(key, schema);
-        indexedColumns.put(key, new ArrayList<>());
         persist();
     }
 
-    public void registerIndex(String tableName, String columnName) throws IOException {
-        String key = tableName.toLowerCase();
-        if (!tables.containsKey(key)) {
+    /**
+     * Registers a named index. Validates that table and column exist and that
+     * no index on the same table+column already exists.
+     */
+    public void registerIndex(String indexName, String tableName, String columnName) throws IOException {
+        String tableKey = tableName.toLowerCase();
+        if (!tables.containsKey(tableKey)) {
             throw new IllegalArgumentException("Table not found: " + tableName);
         }
-        List<String> cols = indexedColumns.computeIfAbsent(key, k -> new ArrayList<>());
-        if (!cols.contains(columnName.toLowerCase())) {
-            cols.add(columnName.toLowerCase());
+        TableSchema schema = tables.get(tableKey);
+        Column col;
+        try {
+            col = schema.column(columnName);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Column not found: " + columnName + " in table " + tableName);
         }
+        if (col.type() != DataType.INT) {
+            throw new IllegalArgumentException(
+                "Cannot create index on column '" + columnName + "': only INT columns are supported");
+        }
+        String idxKey = indexKey(tableName, columnName);
+        if (indexes.containsKey(idxKey)) {
+            throw new IllegalStateException(
+                "Index already exists on " + tableName + "(" + columnName + ")");
+        }
+        indexes.put(idxKey, new IndexMetadata(indexName, tableName, columnName));
         persist();
     }
 
@@ -76,34 +87,43 @@ public class Catalog {
     }
 
     public List<IndexMetadata> getAllIndexes() {
-        List<IndexMetadata> result = new ArrayList<>();
-        for (Map.Entry<String, List<String>> entry : indexedColumns.entrySet()) {
-            String tableName = tables.get(entry.getKey()).tableName();
-            for (String col : entry.getValue()) {
-                result.add(new IndexMetadata(tableName, col));
-            }
-        }
-        return result;
+        return List.copyOf(indexes.values());
     }
 
+    /** Returns all indexes for the given table. */
+    public List<IndexMetadata> indexesFor(String tableName) {
+        String prefix = tableName.toLowerCase() + ".";
+        List<IndexMetadata> result = new ArrayList<>();
+        for (Map.Entry<String, IndexMetadata> e : indexes.entrySet()) {
+            if (e.getKey().startsWith(prefix)) {
+                result.add(e.getValue());
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    /** Returns all indexed column names for a table (used by planner/executor). */
     public List<String> indexedColumnsFor(String tableName) {
-        return Collections.unmodifiableList(
-            indexedColumns.getOrDefault(tableName.toLowerCase(), List.of()));
+        return indexesFor(tableName).stream()
+            .map(IndexMetadata::columnName)
+            .toList();
+    }
+
+    /** Returns the IndexMetadata for a specific table+column, or empty. */
+    public Optional<IndexMetadata> findIndex(String tableName, String columnName) {
+        return Optional.ofNullable(indexes.get(indexKey(tableName, columnName)));
     }
 
     public void dropTable(String name) throws IOException {
         String key = name.toLowerCase();
         tables.remove(key);
-        indexedColumns.remove(key);
+        // Remove all indexes for this table.
+        indexes.entrySet().removeIf(e -> e.getKey().startsWith(key + "."));
         persist();
     }
 
     // ── Persistence ────────────────────────────────────────────────────────────
 
-    /**
-     * Rewrites the catalog file atomically using a temp file + rename.
-     * This prevents a partial write from corrupting the catalog.
-     */
     private void persist() throws IOException {
         File tmp = new File(catalogFile.getParent(), CATALOG_FILE + ".tmp");
         try (BufferedWriter w = new BufferedWriter(new FileWriter(tmp))) {
@@ -115,16 +135,14 @@ public class Catalog {
                     w.write("COLUMN " + col.name() + " " + col.type().name());
                     w.newLine();
                 }
-                List<String> idxCols = indexedColumns.getOrDefault(entry.getKey(), List.of());
-                for (String colName : idxCols) {
-                    w.write("INDEX " + schema.tableName() + " " + colName);
-                    w.newLine();
-                }
+            }
+            // Write all indexes after all tables.
+            for (IndexMetadata idx : indexes.values()) {
+                w.write("INDEX " + idx.indexName() + " " + idx.tableName() + " " + idx.columnName());
+                w.newLine();
             }
         }
-        // Atomic rename: either the full new file is visible or the old one is.
         if (!tmp.renameTo(catalogFile)) {
-            // renameTo can fail across filesystems; fall back to copy+delete.
             try (InputStream in = new FileInputStream(tmp);
                  OutputStream out = new FileOutputStream(catalogFile)) {
                 in.transferTo(out);
@@ -144,36 +162,35 @@ public class Catalog {
                 if (line.isEmpty()) continue;
 
                 if (line.startsWith("TABLE ")) {
-                    // Flush previous table if any
                     if (currentTable != null) {
                         TableSchema schema = new TableSchema(currentTable, List.copyOf(currentColumns));
                         tables.put(currentTable.toLowerCase(), schema);
                     }
                     currentTable = line.substring(6).trim();
                     currentColumns = new ArrayList<>();
-                    indexedColumns.putIfAbsent(currentTable.toLowerCase(), new ArrayList<>());
 
                 } else if (line.startsWith("COLUMN ")) {
                     String[] parts = line.substring(7).trim().split("\\s+", 2);
-                    String colName = parts[0];
-                    DataType type = DataType.valueOf(parts[1]);
-                    currentColumns.add(new Column(colName, type));
+                    currentColumns.add(new Column(parts[0], DataType.valueOf(parts[1])));
 
                 } else if (line.startsWith("INDEX ")) {
-                    // INDEX <tableName> <columnName>
-                    String[] parts = line.substring(6).trim().split("\\s+", 2);
-                    String tbl = parts[0];
-                    String col = parts[1];
-                    indexedColumns
-                        .computeIfAbsent(tbl.toLowerCase(), k -> new ArrayList<>())
-                        .add(col.toLowerCase());
+                    // INDEX <indexName> <tableName> <columnName>
+                    String[] parts = line.substring(6).trim().split("\\s+", 3);
+                    if (parts.length == 3) {
+                        String idxName = parts[0];
+                        String tbl     = parts[1];
+                        String col     = parts[2];
+                        indexes.put(indexKey(tbl, col), new IndexMetadata(idxName, tbl, col));
+                    }
                 }
             }
-            // Flush the last table
             if (currentTable != null) {
-                TableSchema schema = new TableSchema(currentTable, List.copyOf(currentColumns));
-                tables.put(currentTable.toLowerCase(), schema);
+                tables.put(currentTable.toLowerCase(), new TableSchema(currentTable, List.copyOf(currentColumns)));
             }
         }
+    }
+
+    private static String indexKey(String table, String column) {
+        return table.toLowerCase() + "." + column.toLowerCase();
     }
 }

@@ -13,201 +13,231 @@ import java.util.concurrent.*;
 /**
  * JavaDB Benchmark Suite
  *
+ * Usage:
+ *   java -cp javadb.jar com.javadb.benchmark.BenchmarkSuite [rowCount]
+ *
+ * rowCount defaults to 100_000. Pass 1000000 for the 1M-row run.
+ *
  * Benchmarks:
- *   1. Insert throughput at 10K / 100K / 1M rows
- *   2. Full-scan lookup vs indexed point lookup (on 1M-row dataset)
- *   3. Full-scan range vs indexed range scan (on 1M-row dataset)
+ *   1. Insert throughput
+ *   2. Full-scan point lookup vs indexed point lookup
+ *   3. Full-scan range query vs indexed range query
  *   4. Concurrent indexed reads at 1 / 4 / 8 / 16 threads
  *
- * Each timed section is preceded by a JVM warmup pass (not measured).
+ * Each timed section is preceded by a warmup pass (not measured).
  * Results are printed as an aligned terminal table and saved to benchmark-results.csv.
  */
 public class BenchmarkSuite {
 
-    // ── Configuration ──────────────────────────────────────────────────────────
-
-    private static final int[] INSERT_SIZES   = {10_000, 100_000, 1_000_000};
-    private static final int   FULL_SIZE      = 1_000_000;
-    private static final int   SAMPLE_KEY     = 500_000;
-    private static final int   RANGE_LO       = 400_000;
-    private static final int   RANGE_HI       = 600_000;   // 200K rows
-    private static final int[] THREAD_COUNTS  = {1, 4, 8, 16};
-    private static final int   CONCURRENT_QPS = 500;        // queries per thread
-    private static final int   WARMUP_QUERIES = 200;
-
     // ── Entry point ────────────────────────────────────────────────────────────
 
     public static void main(String[] args) throws Exception {
+        int rowCount = 100_000;
+        if (args.length > 0) {
+            try {
+                rowCount = Integer.parseInt(args[0]);
+            } catch (NumberFormatException e) {
+                System.err.println("Invalid row count '" + args[0] + "', using default 100000");
+            }
+        }
+
         System.out.println("JavaDB Benchmark Suite");
-        System.out.println("=".repeat(60));
-        System.out.println("JVM: " + System.getProperty("java.version"));
-        System.out.println("Time: " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        System.out.println("=".repeat(72));
+        System.out.printf("JVM      : %s%n", System.getProperty("java.version"));
+        System.out.printf("Time     : %s%n",
+            LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        System.out.printf("Row count: %,d%n", rowCount);
         System.out.println();
 
         List<BenchmarkResult> results = new ArrayList<>();
 
+        int sampleKey  = rowCount / 2;
+        int rangeLo    = rowCount * 4 / 10;    // 40% mark
+        int rangeHi    = rowCount * 6 / 10;    // 60% mark — ~20% of dataset
+        int warmup     = Math.min(500, rowCount / 100);
+        int concurrentQueriesPerThread = Math.min(500, rowCount / 10);
+
         // ── 1. Insert throughput ───────────────────────────────────────────────
-        // Note: each insert does one WAL flush + one page write. Throughput is
-        // bottlenecked by synchronous I/O, not JIT. The warmup phase inserts
-        // WARMUP_INSERT rows (unmeasured) so the JIT sees realistic bytecode
-        // before the timed section begins.
         header("1. Insert Throughput");
-        for (int n : INSERT_SIZES) {
-            int warmupCount = Math.min(500, n / 10);
-            File dir = tmp("bench-insert-" + n);
+        {
+            File dir = tmp("bench-insert");
             try (Database db = new Database(dir)) {
                 db.execute("CREATE TABLE bench (id INT, name STRING, age INT)");
+                db.execute("CREATE INDEX idx_bench_id ON bench(id)");
 
-                // Unmeasured warmup inserts (negative IDs so they don't collide).
-                for (int i = 1; i <= warmupCount; i++) {
+                // Warmup — negative IDs so they never collide with timed data.
+                for (int i = 1; i <= warmup; i++) {
                     db.execute("INSERT INTO bench VALUES (-" + i + ", 'warm', 0)");
                 }
 
-                // Timed section: positive IDs 1..n
+                // Timed
                 long start = nanos();
-                for (int i = 1; i <= n; i++) {
+                for (int i = 1; i <= rowCount; i++) {
                     db.execute("INSERT INTO bench VALUES (" + i + ", 'user" + i + "', " + (i % 100) + ")");
                 }
                 long elapsed = nanos() - start;
 
-                double rps = n * 1e9 / elapsed;
+                double rps = rowCount * 1e9 / elapsed;
                 results.add(new BenchmarkResult(
-                    "Insert " + fmt(n) + " rows", "-", fmt(n), ms(elapsed), rps, "-"));
-                row(fmt(n) + " rows", ms(elapsed) + " ms", String.format("%.0f rows/s", rps),
-                    "(+" + warmupCount + " warmup, unmeasured)");
+                    "Insert " + fmt(rowCount) + " rows", "-", fmt(rowCount), ms(elapsed) + " ms",
+                    rps, "+" + warmup + " warmup rows (unmeasured)"));
+                row("Insert " + fmt(rowCount) + " rows", ms(elapsed) + " ms",
+                    String.format("%.0f rows/s", rps),
+                    "(+" + warmup + " warmup, unmeasured)");
             }
             deleteDir(dir);
         }
 
         // ── 2. Point lookup: full scan vs index ───────────────────────────────
-        header("2. Point Lookup: Full-scan vs Index (dataset = " + fmt(FULL_SIZE) + " rows)");
+        header("2. Point Lookup  (dataset = " + fmt(rowCount) + " rows, key = " + fmt(sampleKey) + ")");
         File pointDir = tmp("bench-point");
         try (Database db = new Database(pointDir)) {
-            setupLargeTable(db, FULL_SIZE);
+            setupTable(db, rowCount, true);
 
             // Warmup
-            for (int i = 0; i < WARMUP_QUERIES; i++) {
-                db.execute("SELECT * FROM bench WHERE id = " + (i + 1));
+            for (int i = 0; i < warmup; i++) {
+                db.execute("SELECT * FROM bench WHERE id = " + (i % rowCount + 1));
             }
 
-            // Index lookup
+            // Indexed point lookup
             long t0 = nanos();
-            QueryResult r = db.execute("SELECT * FROM bench WHERE id = " + SAMPLE_KEY);
+            QueryResult ri = db.execute("SELECT * FROM bench WHERE id = " + sampleKey);
             long idxNs = nanos() - t0;
-            assertTrue(r.rows().size() == 1, "Index lookup returned " + r.rows().size() + " rows");
+            assertTrue(ri.rows().size() == 1, "Index lookup returned " + ri.rows().size() + " rows");
 
-            // Full scan: use age column (not indexed) so planner falls back to full scan
+            // Full-scan equivalent: use age column (unindexed INT) with a value that won't match
             long t1 = nanos();
-            QueryResult rf = db.execute("SELECT * FROM bench WHERE age = -999"); // no match
+            QueryResult rf = db.execute("SELECT * FROM bench WHERE age = -999");
             long scanNs = nanos() - t1;
 
             double speedup = (double) scanNs / idxNs;
-            results.add(new BenchmarkResult("Point lookup (index)", "id=" + SAMPLE_KEY,
-                "1", ns(idxNs), 0, "-"));
-            results.add(new BenchmarkResult("Point lookup (full scan)", "age=-999",
-                "0", ms(scanNs) + "0ms", 0, String.format("%.0fx slower", speedup)));
+            results.add(new BenchmarkResult("Point lookup (index)", "id=" + sampleKey,
+                "1", ns(idxNs) + " ns", 0, "-"));
+            results.add(new BenchmarkResult("Point lookup (full scan, no match)", "age=-999",
+                "0", ms(scanNs) + " ms", 0, String.format("index %.0fx faster", speedup)));
 
-            row("Index point lookup",  ns(idxNs) + " ns", "1 row",  "-");
-            row("Full scan (no match)", ms(scanNs) + " ms", "0 rows", String.format("Index %.0fx faster", speedup));
+            row("Index point lookup (1 row)",  ns(idxNs) + " ns",    "1 row",  "-");
+            row("Full scan (no match)",         ms(scanNs) + " ms",   "0 rows", String.format("index ~%.0fx faster", speedup));
+
+            System.out.println("  Plan check:");
+            printPlan(db, "EXPLAIN SELECT * FROM bench WHERE id = " + sampleKey, "    idx  ");
+            printPlan(db, "EXPLAIN SELECT * FROM bench WHERE age = -999",         "    scan ");
         }
         deleteDir(pointDir);
 
         // ── 3. Range scan: full scan vs index ─────────────────────────────────
-        header("3. Range Scan: Full-scan vs Index (" + fmt(RANGE_LO) + " to " + fmt(RANGE_HI) + ")");
+        header("3. Range Scan  [" + fmt(rangeLo) + ", " + fmt(rangeHi) + "]  (~20% of dataset)");
         File rangeDir = tmp("bench-range");
         try (Database db = new Database(rangeDir)) {
-            setupLargeTable(db, FULL_SIZE);
+            setupTable(db, rowCount, true);
 
             // Warmup
-            for (int i = 0; i < WARMUP_QUERIES; i++) {
-                db.execute("SELECT * FROM bench WHERE id BETWEEN 1 AND " + (i + 2));
+            for (int i = 0; i < warmup; i++) {
+                int lo = (i * 100) % rowCount + 1;
+                db.execute("SELECT * FROM bench WHERE id BETWEEN " + lo + " AND " + (lo + 50));
             }
 
-            // Index range scan
+            // Indexed range scan
             long t0 = nanos();
             QueryResult ri = db.execute(
-                "SELECT * FROM bench WHERE id BETWEEN " + RANGE_LO + " AND " + RANGE_HI);
+                "SELECT * FROM bench WHERE id BETWEEN " + rangeLo + " AND " + rangeHi);
             long idxNs = nanos() - t0;
-            int expected = RANGE_HI - RANGE_LO + 1;
+            int expected = rangeHi - rangeLo + 1;
             assertTrue(ri.rows().size() == expected,
                 "Range scan returned " + ri.rows().size() + " rows, expected " + expected);
 
-            // Full-scan equivalent: age column forces full scan, count rows with age in range
-            // (since age = i%100, there's no meaningful range — use a non-indexed INT column trick)
-            // To get a true full-scan baseline, we EXPLAIN both and check the plan.
-            QueryResult planIdx  = db.execute("EXPLAIN SELECT * FROM bench WHERE id BETWEEN "
-                + RANGE_LO + " AND " + RANGE_HI);
-            QueryResult planScan = db.execute("EXPLAIN SELECT * FROM bench WHERE age > 0");
+            // Full-scan range: unindexed age column, range that returns ~same fraction
+            // age = i%100, so age BETWEEN 40 AND 60 returns ~21% of rows
+            long t1 = nanos();
+            QueryResult rf = db.execute("SELECT * FROM bench WHERE age BETWEEN 40 AND 60");
+            long scanNs = nanos() - t1;
 
-            double throughput = expected * 1e9 / idxNs;
+            double speedup  = (double) scanNs / idxNs;
+            double rowsPerMs = expected / (idxNs / 1e6);
             results.add(new BenchmarkResult("Range scan (index)",
-                fmt(RANGE_LO) + "–" + fmt(RANGE_HI), fmt(expected), ms(idxNs), throughput, "-"));
+                fmt(rangeLo) + "-" + fmt(rangeHi), fmt(expected), ms(idxNs) + " ms",
+                rowsPerMs * 1000, "-"));
+            results.add(new BenchmarkResult("Range scan (full scan, age range)",
+                "age 40-60", fmt(rf.rows().size()), ms(scanNs) + " ms", 0,
+                String.format("index ~%.1fx faster", speedup)));
 
-            row("Index range [" + fmt(RANGE_LO) + ", " + fmt(RANGE_HI) + "]",
-                ms(idxNs) + " ms",
-                fmt(expected) + " rows",
-                String.format("%.0f rows/ms", throughput / 1000));
-            System.out.println("  Plan (range index): " + planIdx.message().replace("\n", " | "));
-            System.out.println("  Plan (age > 0):     " + planScan.message().replace("\n", " | "));
+            row("Index range [" + fmt(rangeLo) + ", " + fmt(rangeHi) + "]",
+                ms(idxNs) + " ms", fmt(expected) + " rows",
+                String.format("%.0f rows/ms", rowsPerMs));
+            row("Full scan range (age 40–60)",
+                ms(scanNs) + " ms", fmt(rf.rows().size()) + " rows",
+                String.format("index ~%.1fx faster", speedup));
+
+            System.out.println("  Plan check:");
+            printPlan(db, "EXPLAIN SELECT * FROM bench WHERE id BETWEEN " + rangeLo + " AND " + rangeHi, "    idx  ");
+            printPlan(db, "EXPLAIN SELECT * FROM bench WHERE age BETWEEN 40 AND 60",                      "    scan ");
         }
         deleteDir(rangeDir);
 
         // ── 4. Concurrent indexed reads ───────────────────────────────────────
-        header("4. Concurrent Indexed Reads");
+        header("4. Concurrent Indexed Reads  (" + concurrentQueriesPerThread + " queries/thread)");
         File concDir = tmp("bench-concurrent");
         try (Database db = new Database(concDir)) {
-            setupLargeTable(db, FULL_SIZE);
+            setupTable(db, rowCount, true);
 
             // Warmup
-            for (int i = 0; i < WARMUP_QUERIES; i++) {
-                db.execute("SELECT * FROM bench WHERE id = " + (i + 1));
+            for (int i = 0; i < warmup; i++) {
+                db.execute("SELECT * FROM bench WHERE id = " + (i % rowCount + 1));
             }
 
-            int baseline = -1;
-            for (int threads : THREAD_COUNTS) {
-                long elapsed = runConcurrent(db, threads, CONCURRENT_QPS);
-                int totalQ = threads * CONCURRENT_QPS;
+            int[] threadCounts = {1, 4, 8, 16};
+            double baseline = -1;
+            for (int threads : threadCounts) {
+                long elapsed = runConcurrent(db, threads, concurrentQueriesPerThread, rowCount);
+                int totalQ = threads * concurrentQueriesPerThread;
                 double qps = totalQ * 1e3 / elapsed;
-                if (baseline < 0) baseline = (int) qps;
+                if (baseline < 0) baseline = qps;
                 double scale = qps / baseline;
                 results.add(new BenchmarkResult(threads + " thread(s)",
                     fmt(totalQ) + " queries", "-", elapsed + " ms",
-                    qps, String.format("%.2fx", scale)));
+                    qps, String.format("%.2fx scale", scale)));
                 row(threads + " thread(s)", elapsed + " ms",
                     String.format("%.0f qps", qps),
-                    String.format("%.2fx scale", scale));
+                    String.format("%.2fx scale vs 1-thread", scale));
             }
         }
         deleteDir(concDir);
 
-        // ── CSV output ─────────────────────────────────────────────────────────
+        // ── CSV + summary ──────────────────────────────────────────────────────
         writeCsv(results);
 
         System.out.println();
-        System.out.println("=".repeat(60));
+        System.out.println("=".repeat(72));
         System.out.println("Results saved to benchmark-results.csv");
+        System.out.println();
+        System.out.println("Note: each INSERT does one synchronous WAL flush + one page write.");
+        System.out.println("Throughput is bottlenecked by I/O, not JIT warmup.");
+        System.out.println("For 1M rows, run: java -cp javadb.jar com.javadb.benchmark.BenchmarkSuite 1000000");
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
+    // ── Table setup ────────────────────────────────────────────────────────────
 
-    private static void setupLargeTable(Database db, int n) throws Exception {
+    private static void setupTable(Database db, int n, boolean withIndex) throws Exception {
         db.execute("CREATE TABLE bench (id INT, name STRING, age INT)");
+        if (withIndex) {
+            db.execute("CREATE INDEX idx_bench_id ON bench(id)");
+        }
         for (int i = 1; i <= n; i++) {
             db.execute("INSERT INTO bench VALUES (" + i + ", 'user" + i + "', " + (i % 100) + ")");
         }
     }
 
-    private static long runConcurrent(Database db, int threads, int queriesPerThread)
+    private static long runConcurrent(Database db, int threads, int queriesPerThread, int rowCount)
             throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         Future<?>[] futures = new Future[threads];
         long start = System.currentTimeMillis();
         for (int t = 0; t < threads; t++) {
-            final int base = (t * queriesPerThread) % FULL_SIZE + 1;
+            final int base = (t * queriesPerThread) % rowCount + 1;
             futures[t] = pool.submit(() -> {
                 try {
                     for (int i = 0; i < queriesPerThread; i++) {
-                        int key = (base + i - 1) % FULL_SIZE + 1;
+                        int key = (base + i - 1) % rowCount + 1;
                         db.execute("SELECT * FROM bench WHERE id = " + key);
                     }
                 } catch (Exception e) {
@@ -216,9 +246,8 @@ public class BenchmarkSuite {
             });
         }
         for (Future<?> f : futures) f.get();
-        long elapsed = System.currentTimeMillis() - start;
         pool.shutdown();
-        return elapsed;
+        return System.currentTimeMillis() - start;
     }
 
     // ── Formatting ─────────────────────────────────────────────────────────────
@@ -226,29 +255,28 @@ public class BenchmarkSuite {
     private static void header(String title) {
         System.out.println();
         System.out.println("── " + title);
-        System.out.printf("  %-40s %-14s %-16s %s%n", "Benchmark", "Time", "Result", "Notes");
-        System.out.println("  " + "-".repeat(86));
+        System.out.printf("  %-44s %-14s %-18s %s%n", "Benchmark", "Time", "Result", "Notes");
+        System.out.println("  " + "-".repeat(90));
     }
 
     private static void row(String name, String time, String result, String notes) {
-        System.out.printf("  %-40s %-14s %-16s %s%n", name, time, result, notes);
+        System.out.printf("  %-44s %-14s %-18s %s%n", name, time, result, notes);
     }
 
-    private static String fmt(int n) {
-        return String.format("%,d", n);
+    private static void printPlan(Database db, String sql, String prefix) {
+        try {
+            QueryResult r = db.execute(sql);
+            String firstLine = r.message().split("\n")[0];
+            System.out.println(prefix + ": " + firstLine);
+        } catch (Exception e) {
+            System.out.println(prefix + ": ERROR " + e.getMessage());
+        }
     }
 
-    private static String ms(long nanos) {
-        return String.format("%.1f", nanos / 1e6);
-    }
-
-    private static String ns(long nanos) {
-        return String.format("%,d", nanos);
-    }
-
-    private static long nanos() {
-        return System.nanoTime();
-    }
+    private static String fmt(int n) { return String.format("%,d", n); }
+    private static String ms(long nanos) { return String.format("%.1f", nanos / 1e6); }
+    private static String ns(long nanos) { return String.format("%,d", nanos); }
+    private static long nanos() { return System.nanoTime(); }
 
     private static void assertTrue(boolean cond, String msg) {
         if (!cond) throw new AssertionError(msg);
@@ -259,7 +287,7 @@ public class BenchmarkSuite {
     private static void writeCsv(List<BenchmarkResult> results) throws IOException {
         File csv = new File("benchmark-results.csv");
         try (PrintWriter pw = new PrintWriter(new FileWriter(csv))) {
-            pw.println("benchmark,predicate,rows,time_ms,throughput,notes");
+            pw.println("benchmark,predicate,rows,time,throughput,notes");
             for (BenchmarkResult r : results) {
                 pw.printf("\"%s\",\"%s\",\"%s\",\"%s\",\"%.0f\",\"%s\"%n",
                     r.name(), r.predicate(), r.rows(), r.time(), r.throughput(), r.notes());

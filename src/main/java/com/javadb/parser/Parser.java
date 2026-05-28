@@ -118,8 +118,11 @@ public class Parser {
         return new DeleteStatement(table, where);
     }
 
-    private CreateTableStatement parseCreate() {
+    private Statement parseCreate() {
         consume(TokenType.CREATE);
+        if (peek().type() == TokenType.INDEX) {
+            return parseCreateIndex();
+        }
         consume(TokenType.TABLE);
         String table = consumeIdentifier();
         consume(TokenType.LPAREN);
@@ -131,6 +134,17 @@ public class Parser {
         }
         consume(TokenType.RPAREN);
         return new CreateTableStatement(table, columns);
+    }
+
+    private CreateIndexStatement parseCreateIndex() {
+        consume(TokenType.INDEX);
+        String indexName = consumeIdentifier();
+        consume(TokenType.ON);
+        String tableName = consumeIdentifier();
+        consume(TokenType.LPAREN);
+        String columnName = consumeIdentifier();
+        consume(TokenType.RPAREN);
+        return new CreateIndexStatement(indexName, tableName, columnName);
     }
 
     private Column parseColumnDef() {

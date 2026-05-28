@@ -3,7 +3,7 @@ package com.javadb.parser;
 public enum TokenType {
     // Keywords
     SELECT, FROM, WHERE, INSERT, INTO, VALUES, UPDATE, SET, DELETE,
-    CREATE, TABLE, INT, STRING_TYPE,
+    CREATE, TABLE, INDEX, ON, INT, STRING_TYPE,
     AND, OR, BETWEEN, EXPLAIN,
     // Literals
     IDENTIFIER, NUMBER, STRING_LITERAL,
