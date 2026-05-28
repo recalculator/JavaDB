@@ -14,6 +14,7 @@ com/javadb/concurrency/LockManager.class
 com/javadb/index/BPlusTree$LeafNode.class
 com/javadb/wal/WriteAheadLog.class
 com/javadb/index/BPlusTree$Node.class
+com/javadb/catalog/IndexMetadata.class
 com/javadb/parser/TokenType.class
 com/javadb/storage/RowId.class
 com/javadb/catalog/Catalog.class

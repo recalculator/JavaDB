@@ -25,14 +25,23 @@ public class Database implements AutoCloseable {
     private final Executor executor;
 
     public Database(File dataDir) throws IOException {
-        this.catalog = new Catalog();
+        if (!dataDir.exists()) dataDir.mkdirs();
+
+        // Catalog loads persisted schema from catalog.cat (or starts empty).
+        this.catalog = new Catalog(dataDir);
         this.storage = new StorageEngine(dataDir);
         this.indexManager = new IndexManager();
         this.lockManager = new LockManager();
         this.wal = new WriteAheadLog(new File(dataDir, "wal.log"));
         this.recovery = new RecoveryManager(wal);
         this.executor = new Executor(catalog, storage, indexManager, lockManager, wal);
+
+        // Replay any committed WAL entries not yet reflected in storage.
         recovery.recover(executor);
+
+        // Rebuild in-memory B+ tree indexes from persisted table data.
+        // Must happen after recovery so the table files are in a consistent state.
+        executor.rebuildIndexes();
     }
 
     public QueryResult execute(String sql) throws Exception {

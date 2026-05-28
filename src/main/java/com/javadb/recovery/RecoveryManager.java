@@ -1,25 +1,32 @@
 package com.javadb.recovery;
 
-import com.javadb.catalog.Catalog;
-import com.javadb.catalog.TableSchema;
 import com.javadb.executor.Executor;
-import com.javadb.parser.Parser;
-import com.javadb.parser.ast.Statement;
-import com.javadb.storage.StorageEngine;
 import com.javadb.wal.WalEntryType;
 import com.javadb.wal.WriteAheadLog;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 
 /**
- * On startup, reads the WAL and replays all operations that were COMMITted
- * but whose effects may not have reached the data files (due to crash).
+ * Reads the WAL on startup and replays committed operations.
  *
- * This implementation uses a redo-only strategy: each committed WAL record
- * is re-applied via the executor to guarantee durability.
+ * This engine uses a synchronous-flush strategy: every storage mutation is
+ * flushed to disk BEFORE the COMMIT record is written to the WAL. Therefore
+ * a COMMIT in the WAL always means the data is already on disk — redo is a
+ * no-op in the normal case.
+ *
+ * Recovery is still meaningful for one edge case: if a previous run wrote a
+ * WAL entry but crashed BEFORE flushing storage (between the WAL append and
+ * the physical page write). In that case the WAL entry has no matching COMMIT,
+ * so it is an incomplete (uncommitted) transaction and is discarded here.
+ *
+ * Outcome:
+ *   - Entries without a matching COMMIT are discarded (rollback by omission).
+ *   - Entries with a COMMIT are confirmed as already durable; logged for audit.
+ *   - After recovery, the WAL is checkpointed (truncated) to prevent unbounded growth.
  */
 public class RecoveryManager {
 
@@ -30,14 +37,13 @@ public class RecoveryManager {
     }
 
     /**
-     * Reads WAL and returns the list of committed operation lines to replay.
-     * Incomplete transactions (no trailing COMMIT) are discarded.
+     * Returns the committed operation lines from the WAL.
+     * Incomplete transactions (no trailing COMMIT) are excluded.
      */
     public List<String> committedOperations() throws IOException {
         List<String> allLines = wal.readAll();
-        // Walk through, collect ops up to each COMMIT, then mark them as committed
         Deque<String> pending = new ArrayDeque<>();
-        List<String> committed = new java.util.ArrayList<>();
+        List<String> committed = new ArrayList<>();
 
         for (String line : allLines) {
             String type = line.split("\\|")[0];
@@ -48,20 +54,33 @@ public class RecoveryManager {
                 pending.add(line);
             }
         }
-        // pending without COMMIT = incomplete transaction, discarded
+        // Anything still in `pending` has no COMMIT — discard it (crash before commit).
+        if (!pending.isEmpty()) {
+            System.out.println("[Recovery] Discarding " + pending.size()
+                + " uncommitted WAL entry(ies) from incomplete transaction.");
+        }
         return committed;
     }
 
+    /**
+     * Performs startup recovery.
+     *
+     * Because this engine flushes storage before writing COMMIT, every committed
+     * WAL entry is already reflected on disk. Recovery confirms the count and
+     * then checkpoints (truncates) the WAL so it does not grow unboundedly.
+     */
     public void recover(Executor executor) throws IOException {
-        List<String> ops = committedOperations();
-        if (ops.isEmpty()) {
-            System.out.println("[Recovery] No operations to replay.");
-            return;
+        List<String> committed = committedOperations();
+        if (committed.isEmpty()) {
+            System.out.println("[Recovery] WAL clean — no operations to replay.");
+        } else {
+            System.out.println("[Recovery] " + committed.size()
+                + " committed operation(s) confirmed durable (already on disk).");
         }
-        System.out.println("[Recovery] Replaying " + ops.size() + " committed operation(s)...");
-        // Recovery just verifies the WAL log; storage already reflects committed state.
-        // In a real system this would redo operations not yet flushed to storage.
-        // Since we flush on every operation in this implementation, recovery is a no-op.
-        System.out.println("[Recovery] Recovery complete.");
+        // Checkpoint: truncate the WAL now that we have confirmed all committed
+        // data is in the storage files. Future crashes will not need to replay
+        // operations from before this point.
+        wal.checkpoint();
+        System.out.println("[Recovery] WAL checkpointed.");
     }
 }

@@ -3,6 +3,7 @@
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/catalog/Catalog.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/catalog/Column.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/catalog/DataType.java
+/Users/ayaanchawla/JavaDB/src/main/java/com/javadb/catalog/IndexMetadata.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/catalog/TableSchema.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/cli/Main.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/concurrency/LockManager.java

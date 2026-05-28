@@ -1,7 +1,10 @@
+com/javadb/catalog/CatalogPersistenceTest.class
 com/javadb/executor/ExecutorTest.class
 com/javadb/parser/LexerTest.class
 com/javadb/concurrency/LockManagerTest.class
 com/javadb/wal/WriteAheadLogTest.class
+com/javadb/index/BPlusTreeDeleteTest.class
 com/javadb/parser/ParserTest.class
+com/javadb/executor/RestartCorrectnessTest.class
 com/javadb/storage/StorageTest.class
 com/javadb/index/BPlusTreeTest.class

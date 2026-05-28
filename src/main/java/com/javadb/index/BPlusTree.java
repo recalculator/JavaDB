@@ -130,8 +130,13 @@ public class BPlusTree {
 
         @Override
         public Optional<RowId> search(int key) {
-            int idx = keys.indexOf(key);
-            return idx >= 0 ? Optional.of(rids.get(idx)) : Optional.empty();
+            // Binary search: keys are maintained in sorted order by insert().
+            // upperBound gives the first index > key; the key lives at idx-1 if present.
+            int idx = upperBound(keys, key) - 1;
+            if (idx >= 0 && keys.get(idx) == key) {
+                return Optional.of(rids.get(idx));
+            }
+            return Optional.empty();
         }
 
         @Override

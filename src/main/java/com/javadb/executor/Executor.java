@@ -42,7 +42,8 @@ public class Executor {
             case ExecutionPlan.DDL ddl -> executeDDL((CreateTableStatement) ddl.statement());
             case ExecutionPlan.DML dml -> executeDML(dml.statement());
             case ExecutionPlan.FullScan fs -> executeFullScan((SelectStatement) fs.statement());
-            case ExecutionPlan.IndexScan is -> executeIndexScan((SelectStatement) is.statement(), is.indexColumn(), is.exactKey());
+            case ExecutionPlan.IndexScan is ->
+                executeIndexScan((SelectStatement) is.statement(), is.indexColumn(), is.exactKey());
         };
     }
 
@@ -52,10 +53,11 @@ public class Executor {
         TableSchema schema = new TableSchema(stmt.tableName(), stmt.columns());
         catalog.createTable(schema);
         storage.createTable(schema);
-        // Auto-index first INT column
+        // Auto-index the first INT column and record it in the catalog.
         for (Column col : stmt.columns()) {
             if (col.type() == com.javadb.catalog.DataType.INT) {
                 indexManager.createIndex(stmt.tableName(), col.name());
+                catalog.registerIndex(stmt.tableName(), col.name());
                 break;
             }
         }
@@ -78,14 +80,22 @@ public class Executor {
         return lockManager.withWriteLock(stmt.tableName(), () -> {
             TableFile tf = storage.openTable(schema);
             Row row = new Row(stmt.values().toArray());
+
+            // WAL ordering: write the intent before touching storage.
+            // COMMIT is written only after storage succeeds so a crash between
+            // the WAL entry and the COMMIT leaves an uncommitted entry that
+            // recovery will discard.
             wal.logInsert(stmt.tableName(), row.values());
-            wal.commit();
-            RowId rid = tf.insertRow(row);
-            // Update indexes
+
+            RowId rid = tf.insertRow(row); // storage mutation
+
+            wal.commit(); // COMMIT only after storage write succeeds
+
+            // Update in-memory indexes.
             for (int i = 0; i < schema.columns().size(); i++) {
                 Column col = schema.columns().get(i);
-                if (col.type() == com.javadb.catalog.DataType.INT &&
-                        indexManager.hasIndex(stmt.tableName(), col.name())) {
+                if (col.type() == com.javadb.catalog.DataType.INT
+                        && indexManager.hasIndex(stmt.tableName(), col.name())) {
                     indexManager.insert(stmt.tableName(), col.name(), (Integer) row.get(i), rid);
                 }
             }
@@ -97,20 +107,25 @@ public class Executor {
         TableSchema schema = catalog.getTable(stmt.tableName());
         return lockManager.withWriteLock(stmt.tableName(), () -> {
             TableFile tf = storage.openTable(schema);
-            List<RowId> rids = tf.scanAllRowIds();
+            List<RowId> rids = tf.scanAllRowIds(); // only live rows
             int count = 0;
             for (RowId rid : rids) {
                 Row row = tf.getRow(rid);
                 if (stmt.where() == null || ExpressionEvaluator.evaluate(stmt.where(), row, schema)) {
                     Row updated = applyAssignments(row, stmt.assignments(), schema);
+
+                    // WAL: write before -> after before touching storage.
                     wal.logUpdate(stmt.tableName(), row.values(), updated.values());
-                    wal.commit();
-                    tf.updateRow(rid, updated);
-                    // Rebuild indexes for updated row
+
+                    tf.updateRow(rid, updated); // storage mutation
+
+                    wal.commit(); // COMMIT per-row update
+
+                    // Keep indexes consistent for updated INT columns.
                     for (int i = 0; i < schema.columns().size(); i++) {
                         Column col = schema.columns().get(i);
-                        if (col.type() == com.javadb.catalog.DataType.INT &&
-                                indexManager.hasIndex(stmt.tableName(), col.name())) {
+                        if (col.type() == com.javadb.catalog.DataType.INT
+                                && indexManager.hasIndex(stmt.tableName(), col.name())) {
                             indexManager.delete(stmt.tableName(), col.name(), (Integer) row.get(i));
                             indexManager.insert(stmt.tableName(), col.name(), (Integer) updated.get(i), rid);
                         }
@@ -126,28 +141,35 @@ public class Executor {
         TableSchema schema = catalog.getTable(stmt.tableName());
         return lockManager.withWriteLock(stmt.tableName(), () -> {
             TableFile tf = storage.openTable(schema);
-            // Collect rows to delete first (to avoid ConcurrentModification)
+
+            // Collect matching live rows first so we don't mutate during scan.
             List<RowId> toDelete = new ArrayList<>();
             for (RowId rid : tf.scanAllRowIds()) {
                 Row row = tf.getRow(rid);
                 if (stmt.where() == null || ExpressionEvaluator.evaluate(stmt.where(), row, schema)) {
                     toDelete.add(rid);
-                    wal.logDelete(stmt.tableName(), row.values());
                 }
             }
-            wal.commit();
-            // Delete in reverse order to preserve slot indexes
-            for (int i = toDelete.size() - 1; i >= 0; i--) {
-                RowId rid = toDelete.get(i);
+
+            // For each matched row: write WAL entry, tombstone storage, then COMMIT.
+            // COMMIT is written after the tombstone succeeds so a crash before the
+            // tombstone leaves a WAL entry without a matching COMMIT — recovery discards it.
+            for (RowId rid : toDelete) {
                 Row row = tf.getRow(rid);
+                wal.logDelete(stmt.tableName(), row.values());
+
+                tf.tombstoneRow(rid); // stable tombstone — no slot shifting
+
+                wal.commit(); // COMMIT only after tombstone is on disk
+
+                // Remove from index; the RowId itself is no longer reachable via scan.
                 for (int j = 0; j < schema.columns().size(); j++) {
                     Column col = schema.columns().get(j);
-                    if (col.type() == com.javadb.catalog.DataType.INT &&
-                            indexManager.hasIndex(stmt.tableName(), col.name())) {
+                    if (col.type() == com.javadb.catalog.DataType.INT
+                            && indexManager.hasIndex(stmt.tableName(), col.name())) {
                         indexManager.delete(stmt.tableName(), col.name(), (Integer) row.get(j));
                     }
                 }
-                tf.deleteRow(rid);
             }
             return QueryResult.dml(toDelete.size());
         });
@@ -159,15 +181,14 @@ public class Executor {
         TableSchema schema = catalog.getTable(stmt.tableName());
         return lockManager.withReadLock(stmt.tableName(), () -> {
             TableFile tf = storage.openTable(schema);
-            List<Row> all = tf.scanAll();
+            List<Row> all = tf.scanAll(); // already skips tombstones
             List<Row> filtered = new ArrayList<>();
             for (Row row : all) {
                 if (stmt.where() == null || ExpressionEvaluator.evaluate(stmt.where(), row, schema)) {
                     filtered.add(project(row, stmt.columns(), schema));
                 }
             }
-            List<String> resultColumns = resolveColumns(stmt.columns(), schema);
-            return QueryResult.select(resultColumns, filtered);
+            return QueryResult.select(resolveColumns(stmt.columns(), schema), filtered);
         });
     }
 
@@ -179,13 +200,50 @@ public class Executor {
             if (ridOpt.isPresent()) {
                 TableFile tf = storage.openTable(schema);
                 Row row = tf.getRow(ridOpt.get());
-                if (stmt.where() == null || ExpressionEvaluator.evaluate(stmt.where(), row, schema)) {
+                // Guard: the index may still hold a RID for a tombstoned row.
+                if (!row.deleted()
+                        && (stmt.where() == null || ExpressionEvaluator.evaluate(stmt.where(), row, schema))) {
                     results.add(project(row, stmt.columns(), schema));
                 }
             }
-            List<String> resultColumns = resolveColumns(stmt.columns(), schema);
-            return QueryResult.select(resultColumns, results);
+            return QueryResult.select(resolveColumns(stmt.columns(), schema), results);
         });
+    }
+
+    // ── Index rebuild (called by Database on startup) ──────────────────────────
+
+    /**
+     * Scans every table file and populates the in-memory B+ tree indexes
+     * according to the index metadata stored in the catalog.
+     *
+     * This is called once after the catalog is loaded. It is safe to call
+     * even if the table file has tombstoned rows — those slots are skipped.
+     */
+    public void rebuildIndexes() throws IOException {
+        for (Map.Entry<String, TableSchema> entry : catalog.getAllTables().entrySet()) {
+            TableSchema schema = entry.getValue();
+            List<String> idxCols = catalog.indexedColumnsFor(schema.tableName());
+            if (idxCols.isEmpty()) continue;
+
+            // Ensure in-memory index structures exist.
+            for (String col : idxCols) {
+                if (!indexManager.hasIndex(schema.tableName(), col)) {
+                    indexManager.createIndex(schema.tableName(), col);
+                }
+            }
+
+            TableFile tf = storage.openTable(schema);
+            // Iterate every slot (live only — tombstones are skipped by scanAllRowIds).
+            for (RowId rid : tf.scanAllRowIds()) {
+                Row row = tf.getRow(rid);
+                for (String colName : idxCols) {
+                    int colIdx = schema.columnIndex(colName);
+                    if (row.get(colIdx) instanceof Integer key) {
+                        indexManager.insert(schema.tableName(), colName, key, rid);
+                    }
+                }
+            }
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

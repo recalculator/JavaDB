@@ -56,15 +56,63 @@ class StorageTest {
     }
 
     @Test
-    void deleteRow(@TempDir File tmpDir) throws Exception {
+    void tombstonePreservesSlotIndex(@TempDir File tmpDir) throws Exception {
+        // Tombstoning row 0 must not shift row 1's slot index.
         File f = new File(tmpDir, "users.tbl");
         f.createNewFile();
         TableFile tf = new TableFile(f, SCHEMA);
-        tf.insertRow(Row.of(1, "A"));
-        RowId rid2 = tf.insertRow(Row.of(2, "B"));
-        // delete slot 0 — then recount
-        tf.deleteRow(new RowId(0, 0));
-        assertEquals(1, tf.scanAll().size());
+        RowId rid0 = tf.insertRow(Row.of(1, "A"));
+        RowId rid1 = tf.insertRow(Row.of(2, "B"));
+
+        tf.tombstoneRow(rid0);
+
+        // scanAll should skip the tombstone and return only row 1.
+        List<Row> live = tf.scanAll();
+        assertEquals(1, live.size());
+        assertEquals(2, live.get(0).get(0));
+
+        // Row 1's RowId must still be valid after the tombstone.
+        Row row1 = tf.getRow(rid1);
+        assertFalse(row1.deleted());
+        assertEquals(2, row1.get(0));
+
+        tf.close();
+    }
+
+    @Test
+    void tombstonePersistsAcrossReopen(@TempDir File tmpDir) throws Exception {
+        // After closing and reopening the file, tombstoned rows must still be tombstoned.
+        File f = new File(tmpDir, "users.tbl");
+        f.createNewFile();
+        RowId rid0;
+        try (TableFile tf = new TableFile(f, SCHEMA)) {
+            rid0 = tf.insertRow(Row.of(1, "A"));
+            tf.insertRow(Row.of(2, "B"));
+            tf.tombstoneRow(rid0);
+        }
+        try (TableFile tf = new TableFile(f, SCHEMA)) {
+            assertTrue(tf.getRow(rid0).deleted(), "Tombstone should survive a close/reopen");
+            List<Row> live = tf.scanAll();
+            assertEquals(1, live.size());
+            assertEquals(2, live.get(0).get(0));
+        }
+    }
+
+    @Test
+    void scanAllRowIdsSkipsTombstones(@TempDir File tmpDir) throws Exception {
+        File f = new File(tmpDir, "users.tbl");
+        f.createNewFile();
+        TableFile tf = new TableFile(f, SCHEMA);
+        RowId r0 = tf.insertRow(Row.of(1, "A"));
+        RowId r1 = tf.insertRow(Row.of(2, "B"));
+        RowId r2 = tf.insertRow(Row.of(3, "C"));
+        tf.tombstoneRow(r1);
+
+        List<RowId> rids = tf.scanAllRowIds();
+        assertEquals(2, rids.size());
+        assertTrue(rids.contains(r0));
+        assertTrue(rids.contains(r2));
+        assertFalse(rids.contains(r1));
         tf.close();
     }
 }
