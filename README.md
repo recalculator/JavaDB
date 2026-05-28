@@ -408,9 +408,3 @@ These are deliberate omissions, not oversights. The goal is a codebase that can 
 6. Multi-statement transactions — `BEGIN` / `COMMIT` / `ROLLBACK`
 7. JOIN support — nested-loop join as a first implementation
 8. MVCC — snapshot isolation without writer-blocks-reader
-
----
-
-## Resume description
-
-Built a relational database engine from scratch in Java 21 featuring SQL query parsing (recursive-descent), explicit `CREATE INDEX` with B+ tree indexing and range scan support, 4 KB page-based persistent storage, write-ahead logging with correct commit ordering, crash recovery with WAL checkpointing, tombstone-based deletes with stable RowIds, persistent catalog with atomic writes, concurrent reader-writer locking, an EXPLAIN command showing named indexes, and a configurable benchmark suite. 96 passing tests covering CREATE INDEX validation, backfill, restart persistence, planner integration, delete safety, and concurrent access.
