@@ -18,6 +18,10 @@ public record QueryResult(List<String> columns, List<Row> rows, int affectedRows
         return new QueryResult(List.of(), List.of(), 0, message);
     }
 
+    public static QueryResult explain(String planText) {
+        return new QueryResult(List.of("EXPLAIN"), List.of(), 0, planText);
+    }
+
     public void print() {
         if (message != null) {
             System.out.println(message);

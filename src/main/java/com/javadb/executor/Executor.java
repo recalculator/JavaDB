@@ -38,12 +38,23 @@ public class Executor {
 
     public QueryResult execute(Statement stmt) throws Exception {
         ExecutionPlan plan = planner.plan(stmt);
+        return dispatch(plan);
+    }
+
+    private QueryResult dispatch(ExecutionPlan plan) throws Exception {
         return switch (plan) {
-            case ExecutionPlan.DDL ddl -> executeDDL((CreateTableStatement) ddl.statement());
-            case ExecutionPlan.DML dml -> executeDML(dml.statement());
-            case ExecutionPlan.FullScan fs -> executeFullScan((SelectStatement) fs.statement());
+            case ExecutionPlan.DDL ddl ->
+                executeDDL((CreateTableStatement) ddl.statement());
+            case ExecutionPlan.DML dml ->
+                executeDML(dml.statement());
+            case ExecutionPlan.FullScan fs ->
+                executeFullScan((SelectStatement) fs.statement());
             case ExecutionPlan.IndexScan is ->
                 executeIndexScan((SelectStatement) is.statement(), is.indexColumn(), is.exactKey());
+            case ExecutionPlan.IndexRangeScan irs ->
+                executeIndexRangeScan((SelectStatement) irs.statement(), irs.indexColumn(), irs.low(), irs.high());
+            case ExecutionPlan.Explain exp ->
+                explainPlan(exp.inner());
         };
     }
 
@@ -208,6 +219,63 @@ public class Executor {
             }
             return QueryResult.select(resolveColumns(stmt.columns(), schema), results);
         });
+    }
+
+    private QueryResult executeIndexRangeScan(SelectStatement stmt, String indexCol,
+                                               int low, int high) throws Exception {
+        TableSchema schema = catalog.getTable(stmt.tableName());
+        return lockManager.withReadLock(stmt.tableName(), () -> {
+            List<RowId> rids = indexManager.rangeSearch(stmt.tableName(), indexCol, low, high);
+            TableFile tf = storage.openTable(schema);
+            List<Row> results = new ArrayList<>();
+            for (RowId rid : rids) {
+                Row row = tf.getRow(rid);
+                // Guard tombstoned slots — index rebuild skips them, but a delete
+                // between rebuild and this query could still leave a stale entry.
+                if (!row.deleted()
+                        && (stmt.where() == null || ExpressionEvaluator.evaluate(stmt.where(), row, schema))) {
+                    results.add(project(row, stmt.columns(), schema));
+                }
+            }
+            return QueryResult.select(resolveColumns(stmt.columns(), schema), results);
+        });
+    }
+
+    // ── EXPLAIN ────────────────────────────────────────────────────────────────
+
+    private QueryResult explainPlan(ExecutionPlan inner) {
+        String text = describePlan(inner);
+        return QueryResult.explain(text);
+    }
+
+    private String describePlan(ExecutionPlan plan) {
+        return switch (plan) {
+            case ExecutionPlan.FullScan fs -> {
+                SelectStatement sel = (SelectStatement) fs.statement();
+                String predicate = sel.where() == null ? "(none)" : sel.where().toString();
+                yield "FULL_SCAN"
+                    + "\n  table     : " + sel.tableName()
+                    + "\n  predicate : " + predicate;
+            }
+            case ExecutionPlan.IndexScan is -> {
+                SelectStatement sel = (SelectStatement) is.statement();
+                yield "INDEX_SCAN"
+                    + "\n  table     : " + sel.tableName()
+                    + "\n  index col : " + is.indexColumn()
+                    + "\n  lookup    : " + is.indexColumn() + " = " + is.exactKey();
+            }
+            case ExecutionPlan.IndexRangeScan irs -> {
+                SelectStatement sel = (SelectStatement) irs.statement();
+                String loStr = irs.low()  == Integer.MIN_VALUE ? "-∞" : String.valueOf(irs.low());
+                String hiStr = irs.high() == Integer.MAX_VALUE ? "+∞" : String.valueOf(irs.high());
+                yield "INDEX_RANGE_SCAN"
+                    + "\n  table     : " + sel.tableName()
+                    + "\n  index col : " + irs.indexColumn()
+                    + "\n  range     : [" + loStr + ", " + hiStr + "]";
+            }
+            case ExecutionPlan.Explain exp -> describePlan(exp.inner());
+            default -> plan.getClass().getSimpleName();
+        };
     }
 
     // ── Index rebuild (called by Database on startup) ──────────────────────────

@@ -10,10 +10,12 @@ com/javadb/parser/Parser$1.class
 com/javadb/index/BPlusTree$InsertResult.class
 com/javadb/executor/Executor.class
 com/javadb/wal/WalEntry.class
+com/javadb/parser/ast/ExplainStatement.class
 com/javadb/concurrency/LockManager.class
 com/javadb/index/BPlusTree$LeafNode.class
 com/javadb/wal/WriteAheadLog.class
 com/javadb/index/BPlusTree$Node.class
+com/javadb/planner/ExecutionPlan$Explain.class
 com/javadb/catalog/IndexMetadata.class
 com/javadb/parser/TokenType.class
 com/javadb/storage/RowId.class
@@ -21,9 +23,11 @@ com/javadb/catalog/Catalog.class
 com/javadb/parser/ast/Expression$Column.class
 com/javadb/planner/QueryPlanner$IndexHint.class
 com/javadb/catalog/DataType.class
+com/javadb/planner/ExecutionPlan$IndexRangeScan.class
 com/javadb/parser/Parser.class
 com/javadb/index/IndexManager.class
 com/javadb/planner/ExecutionPlan$IndexScan.class
+com/javadb/planner/QueryPlanner$RangeHint.class
 com/javadb/index/BPlusTree.class
 com/javadb/executor/ExpressionEvaluator.class
 com/javadb/parser/ast/Expression$BinaryOp.class
@@ -46,6 +50,7 @@ com/javadb/storage/StorageEngine.class
 com/javadb/parser/ast/Statement.class
 com/javadb/storage/TableFile.class
 com/javadb/planner/QueryPlanner.class
+com/javadb/benchmark/BenchmarkSuite$BenchmarkResult.class
 com/javadb/cli/Main.class
 com/javadb/Database.class
 com/javadb/planner/ExecutionPlan$FullScan.class

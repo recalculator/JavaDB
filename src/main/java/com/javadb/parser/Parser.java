@@ -27,6 +27,7 @@ public class Parser {
     private Statement parseStatement() {
         Token t = peek();
         return switch (t.type()) {
+            case EXPLAIN -> parseExplain();
             case SELECT -> parseSelect();
             case INSERT -> parseInsert();
             case UPDATE -> parseUpdate();
@@ -34,6 +35,15 @@ public class Parser {
             case CREATE -> parseCreate();
             default -> throw new ParseException("Unexpected token: " + t);
         };
+    }
+
+    private ExplainStatement parseExplain() {
+        consume(TokenType.EXPLAIN);
+        // EXPLAIN must be followed by a SELECT statement.
+        if (peek().type() != TokenType.SELECT) {
+            throw new ParseException("EXPLAIN only supports SELECT statements");
+        }
+        return new ExplainStatement(parseSelect());
     }
 
     private SelectStatement parseSelect() {
@@ -153,6 +163,16 @@ public class Parser {
             pos++;
             Expression right = parsePrimary();
             return new Expression.BinaryOp(left, op, right);
+        }
+        // BETWEEN x AND y  →  (left >= x) AND (left <= y)
+        if (t == TokenType.BETWEEN) {
+            consume(TokenType.BETWEEN);
+            Expression lo = parsePrimary();
+            consume(TokenType.AND);
+            Expression hi = parsePrimary();
+            Expression geLo = new Expression.BinaryOp(left, ">=", lo);
+            Expression leHi = new Expression.BinaryOp(left, "<=", hi);
+            return new Expression.BinaryOp(geLo, "AND", leHi);
         }
         return left;
     }

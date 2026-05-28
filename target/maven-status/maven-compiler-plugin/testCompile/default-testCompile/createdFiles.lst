@@ -3,6 +3,7 @@ com/javadb/executor/ExecutorTest.class
 com/javadb/parser/LexerTest.class
 com/javadb/concurrency/LockManagerTest.class
 com/javadb/wal/WriteAheadLogTest.class
+com/javadb/planner/ExplainTest.class
 com/javadb/index/BPlusTreeDeleteTest.class
 com/javadb/parser/ParserTest.class
 com/javadb/executor/RestartCorrectnessTest.class

@@ -6,5 +6,6 @@
 /Users/ayaanchawla/JavaDB/src/test/java/com/javadb/index/BPlusTreeTest.java
 /Users/ayaanchawla/JavaDB/src/test/java/com/javadb/parser/LexerTest.java
 /Users/ayaanchawla/JavaDB/src/test/java/com/javadb/parser/ParserTest.java
+/Users/ayaanchawla/JavaDB/src/test/java/com/javadb/planner/ExplainTest.java
 /Users/ayaanchawla/JavaDB/src/test/java/com/javadb/storage/StorageTest.java
 /Users/ayaanchawla/JavaDB/src/test/java/com/javadb/wal/WriteAheadLogTest.java

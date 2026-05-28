@@ -21,7 +21,9 @@ public class Lexer {
         Map.entry("int", TokenType.INT),
         Map.entry("string", TokenType.STRING_TYPE),
         Map.entry("and", TokenType.AND),
-        Map.entry("or", TokenType.OR)
+        Map.entry("or", TokenType.OR),
+        Map.entry("between", TokenType.BETWEEN),
+        Map.entry("explain", TokenType.EXPLAIN)
     );
 
     private final String input;

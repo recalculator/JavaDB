@@ -19,6 +19,7 @@
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/parser/TokenType.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/parser/ast/CreateTableStatement.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/parser/ast/DeleteStatement.java
+/Users/ayaanchawla/JavaDB/src/main/java/com/javadb/parser/ast/ExplainStatement.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/parser/ast/Expression.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/parser/ast/InsertStatement.java
 /Users/ayaanchawla/JavaDB/src/main/java/com/javadb/parser/ast/SelectStatement.java
